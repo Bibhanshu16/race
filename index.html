@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Phone Racer</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root { --bg:#10141c; --panel:#1a2130; --ink:#f2f4f8; --dim:#8d97aa; --amber:#ffb703; --red:#ef476f; --green:#3ddc97; }
+* { box-sizing:border-box; margin:0; padding:0; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
+html, body { height:100%; }
+body { background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; touch-action:none; }
+.screen { display:none; position:absolute; inset:0; flex-direction:column; align-items:center; justify-content:center; padding:20px; text-align:center; gap:14px; }
+.screen.active { display:flex; }
+h1 { font-size:clamp(2.2rem,6vw,3.6rem); font-weight:900; letter-spacing:-.02em; }
+h2 { font-size:1.6rem; font-weight:800; }
+p { color:var(--dim); max-width:36ch; line-height:1.4; }
+.btn { padding:14px 28px; font-size:1.05rem; font-weight:700; border:0; border-radius:10px; cursor:pointer; color:var(--ink); background:var(--panel); }
+.btn:active { transform:scale(.96); }
+.btn.primary { background:var(--amber); color:#1a1300; }
+.btn.small { padding:8px 14px; font-size:.85rem; }
+.hidden { display:none !important; }
+.code { font-size:clamp(3rem,10vw,5.5rem); font-weight:900; letter-spacing:.25em; padding:10px 10px 10px calc(10px + .25em); background:#000; border:2px solid var(--amber); border-radius:12px; color:var(--amber); }
+input[type=text] { font-size:2rem; padding:12px; text-align:center; text-transform:uppercase; width:min(80%,300px); border-radius:10px; border:2px solid var(--panel); background:#0b0e14; color:var(--ink); outline:none; }
+.status { min-height:1.4em; color:var(--dim); } .status.ok { color:var(--green); } .status.bad { color:var(--red); }
+.players { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+.pchip { padding:8px 16px; border:2px solid; border-radius:999px; font-weight:800; }
+.row { display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap; }
+/* host race */
+#screen-host-race { padding:0; }
+#race-canvas { position:absolute; inset:0; width:100%; height:100%; background:#0d1a12; }
+#overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; background:rgba(10,13,19,.8); }
+#countdown { font-size:9rem; font-weight:900; color:var(--amber); }
+.res { border-collapse:collapse; font-weight:700; font-size:1.2rem; } .res td { padding:6px 16px; }
+/* phone controller (landscape, held like a steering wheel) */
+#screen-phone-ctl { flex-direction:row; padding:0; gap:0; }
+.pedal { flex:0 0 30%; height:100%; border:0; font-size:clamp(1.3rem,5vh,2.4rem); font-weight:900; letter-spacing:.08em; color:#fff; touch-action:none; padding-top:env(safe-area-inset-top); }
+#brake { background:#7a1f33; } #gas { background:#1f7a52; }
+.pedal.down { filter:brightness(1.6); }
+.mid { flex:1; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:8px; }
+#wheel { width:min(32vh,110px); height:min(32vh,110px); transition:transform .05s linear; }
+#hudtxt { font-size:1.1rem; font-weight:800; font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+
+<div id="screen-home" class="screen active">
+  <h1>Phone Racer</h1>
+  <p>Show the track on a laptop or TV. Your phone is the steering wheel.</p>
+  <button id="btn-start-host" class="btn primary">Host race (laptop / TV)</button>
+  <button id="btn-start-phone" class="btn">Use phone as wheel</button>
+</div>
+
+<div id="screen-host-lobby" class="screen">
+  <h2>Enter this code on your phones</h2>
+  <div class="code" id="host-room-code">----</div>
+  <div class="players" id="player-list"></div>
+  <p class="status" id="host-status">Waiting for phones... (up to 4)</p>
+  <button id="btn-start-race" class="btn primary hidden">Start race (3 laps)</button>
+</div>
+
+<div id="screen-host-race" class="screen">
+  <canvas id="race-canvas"></canvas>
+  <div id="overlay" class="hidden"></div>
+</div>
+
+<div id="screen-phone-join" class="screen">
+  <h2>Connect to race</h2>
+  <input type="text" id="input-room-code" placeholder="CODE" maxlength="4" autocomplete="off" autocapitalize="characters">
+  <button id="btn-connect" class="btn primary">Connect</button>
+  <p class="status" id="phone-status"></p>
+</div>
+
+<div id="screen-phone-gate" class="screen">
+  <h2>Ready to drive</h2>
+  <p>Hold the phone sideways like a steering wheel. Left thumb brakes, right thumb accelerates. Turn the phone to steer.</p>
+  <p class="status" id="gate-status"></p>
+  <button id="btn-drive" class="btn primary">Start driving</button>
+</div>
+
+<div id="screen-phone-ctl" class="screen">
+  <button id="brake" class="pedal">BRAKE</button>
+  <div class="mid">
+    <div id="who" style="font-weight:900">P?</div>
+    <svg id="wheel" viewBox="0 0 100 100" fill="none" stroke="#f2f4f8" stroke-width="7" stroke-linecap="round">
+      <circle cx="50" cy="50" r="40"/><circle cx="50" cy="50" r="9" fill="#f2f4f8"/>
+      <path d="M10 50 H41 M59 50 H90 M50 59 V90"/><circle cx="50" cy="10" r="5" fill="#ffb703" stroke="none"/>
+    </svg>
+    <div id="hudtxt">Waiting...</div>
+    <div class="row">
+      <button id="btn-cal" class="btn small primary">Center wheel</button>
+      <button id="btn-quit" class="btn small">Leave</button>
+    </div>
+    <label class="status" style="font-size:.8rem">Turn needed <input type="range" id="range" min="20" max="60" value="35" style="width:110px;accent-color:#ffb703"></label>
+    <p class="status" id="ctl-msg" style="font-size:.8rem"></p>
+  </div>
+  <button id="gas" class="pedal">GAS</button>
+</div>
+
+<script>
+/* ===== Shared ===== */
+let peer = null, dataConn = null;
+const $ = id => document.getElementById(id);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const D2R = Math.PI / 180;
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ';
+function showScreen(id) {
+  document.querySelectorAll('body > .screen').forEach(s => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+function send(m) { if (dataConn && dataConn.open) dataConn.send(m); }
+
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(freq, type, dur, vol = 0.12) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime;
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t + dur);
+}
+
+/* ===== Track (closed Catmull-Rom loop in a 1600x900 world) ===== */
+const W = 1600, H = 900, ROAD = 120, LAPS = 3, MAXP = 4;
+const CP = [[250,450],[300,220],[550,130],[800,230],[1050,120],[1330,200],[1420,430],[1250,620],[1000,560],[850,720],[550,790],[300,700]];
+const TRACK = [];
+(function build() {
+  const n = CP.length;
+  for (let i = 0; i < n; i++) {
+    const p0 = CP[(i + n - 1) % n], p1 = CP[i], p2 = CP[(i + 1) % n], p3 = CP[(i + 2) % n];
+    for (let k = 0; k < 20; k++) {
+      const t = k / 20, t2 = t * t, t3 = t2 * t;
+      TRACK.push([0, 1].map(j => 0.5 * (2 * p1[j] + (-p0[j] + p2[j]) * t + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2 + (-p0[j] + 3 * p1[j] - 3 * p2[j] + p3[j]) * t3)));
+    }
+  }
+})();
+const N = TRACK.length;
+const TAN = TRACK.map((_, i) => {
+  const a = TRACK[(i + N - 1) % N], b = TRACK[(i + 1) % N];
+  return Math.atan2(b[1] - a[1], b[0] - a[0]);
+});
+
+/* ===== HOST ===== */
+const PCOL = ['#3ddc97', '#ffb703', '#4cc9f0', '#f72585'];
+const players = Array.from({ length: MAXP }, (_, i) => ({
+  slot: i, conn: null, color: PCOL[i], name: 'P' + (i + 1), played: false,
+  in: { s: 0, t: 0, b: 0, at: 0 }, x: 0, y: 0, a: 0, v: 0, idx: 0, total: 0, fin: null, off: false
+}));
+const online = () => players.filter(p => p.conn);
+const toPlayer = (p, m) => { if (p.conn && p.conn.open) p.conn.send(m); };
+let canvas, ctx, trackCv = null, R = { state: 'idle' }, rafId = null, lastT = 0, hudTimer = 0;
+
+function makeCode() {
+  let c = ''; for (let i = 0; i < 4; i++) c += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  return c;
+}
+function initHost() {
+  const code = makeCode();
+  $('host-room-code').textContent = code;
+  peer = new Peer('race-' + code);
+  peer.on('error', err => {
+    if (err.type === 'unavailable-id') { peer.destroy(); initHost(); }
+    else setHostStatus('Connection error: ' + err.type, 'bad');
+  });
+  peer.on('connection', conn => {
+    const p = players.find(x => !x.conn);
+    const busy = R.state === 'count' || R.state === 'go';
+    if (!p || busy) {
+      const reason = p ? 'A race is in progress. Join after it ends.' : 'Game is full (4 players).';
+      conn.on('open', () => { conn.send({ type: 'rejected', reason }); setTimeout(() => conn.close(), 400); });
+      return;
+    }
+    p.conn = conn;
+    conn.on('open', () => { conn.send({ type: 'welcome', name: p.name, color: p.color }); renderLobby(); });
+    conn.on('data', d => { if (d.type === 'in') p.in = { s: clamp(+d.s || 0, -1, 1), t: d.t ? 1 : 0, b: d.b ? 1 : 0, at: performance.now() }; });
+    conn.on('close', () => {
+      if (p.conn !== conn) return;
+      p.conn = null; renderLobby();
+      if ((R.state === 'go' || R.state === 'count') && !online().length) endRace('All players left');
+    });
+  });
+  renderLobby();
+}
+function setHostStatus(t, cls) { const e = $('host-status'); e.textContent = t; e.className = 'status ' + (cls || ''); }
+function renderLobby() {
+  $('player-list').innerHTML = players.map(p =>
+    '<div class="pchip" style="border-color:' + p.color + ';color:' + p.color + ';opacity:' + (p.conn ? 1 : 0.3) + '">' + p.name + (p.conn ? ' ready' : ' empty') + '</div>').join('');
+  const n = online().length;
+  setHostStatus(n ? n + ' of ' + MAXP + ' players connected' : 'Waiting for phones... (up to 4)', n ? 'ok' : '');
+  $('btn-start-race').classList.toggle('hidden', n === 0);
+}
+
+function drawTrackCache() {
+  trackCv = document.createElement('canvas'); trackCv.width = W; trackCv.height = H;
+  const c = trackCv.getContext('2d');
+  c.fillStyle = '#16301f'; c.fillRect(0, 0, W, H);
+  const path = () => { c.beginPath(); TRACK.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.closePath(); };
+  c.lineJoin = 'round'; c.lineCap = 'round';
+  path(); c.strokeStyle = '#e9e9e9'; c.lineWidth = ROAD + 16; c.stroke();
+  path(); c.strokeStyle = '#373d4a'; c.lineWidth = ROAD; c.stroke();
+  path(); c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 4; c.setLineDash([22, 26]); c.stroke(); c.setLineDash([]);
+  const p = TRACK[0], a = TAN[0], nx = -Math.sin(a), ny = Math.cos(a);   // start line
+  c.save(); c.translate(p[0], p[1]); c.rotate(a);
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 2; j++) { c.fillStyle = (i + j) % 2 ? '#fff' : '#111'; c.fillRect(j * 10 - 10, -ROAD / 2 + i * (ROAD / 8), 10, ROAD / 8); }
+  c.restore();
+}
+
+function resizeCanvas() { if (canvas) { canvas.width = innerWidth; canvas.height = innerHeight; } }
+window.addEventListener('resize', resizeCanvas);
+
+function startRace() {
+  if (!online().length) return;
+  initAudio();
+  showScreen('screen-host-race');
+  canvas = $('race-canvas'); ctx = canvas.getContext('2d'); resizeCanvas();
+  if (!trackCv) drawTrackCache();
+  let k = 0;
+  players.forEach(p => {
+    p.played = !!p.conn; p.fin = null; p.v = 0; p.in = { s: 0, t: 0, b: 0, at: 0 };
+    if (!p.played) return;
+    const idx = (N - 4 - k * 5 + N * 2) % N, side = k % 2 ? -26 : 26, a = TAN[idx];
+    p.x = TRACK[idx][0] - Math.sin(a) * side; p.y = TRACK[idx][1] + Math.cos(a) * side; p.a = a;
+    p.idx = idx; p.total = idx > N / 2 ? idx - N : idx; k++;
+  });
+  R = { state: 'count', t: 0, order: [], deadline: null };
+  online().forEach(p => toPlayer(p, { type: 'countdown' }));
+  cancelAnimationFrame(rafId); lastT = performance.now(); rafId = requestAnimationFrame(loop);
+  countdown(3);
+}
+function countdown(n) {
+  const ov = $('overlay'); ov.classList.remove('hidden');
+  if (n === 0) {
+    ov.innerHTML = '<div id="countdown">GO!</div>'; tone(880, 'sine', 0.4); R.state = 'go';
+    setTimeout(() => { if (R.state === 'go') ov.classList.add('hidden'); }, 700);
+    return;
+  }
+  ov.innerHTML = '<div id="countdown">' + n + '</div><p>Hold the phone like a wheel. It centers itself now.</p>';
+  tone(440, 'sine', 0.15);
+  setTimeout(() => countdown(n - 1), 1000);
+}
+
+function ranking() {
+  return players.filter(p => p.played).sort((a, b) =>
+    (a.fin != null && b.fin != null) ? a.fin - b.fin : a.fin != null ? -1 : b.fin != null ? 1 : b.total - a.total);
+}
+
+function step(dt) {
+  const act = players.filter(p => p.played);
+  const now = performance.now();
+  for (const p of act) {
+    const inp = (now - p.in.at < 500 && p.fin == null) ? p.in : { s: 0, t: 0, b: 0 };
+    // nearest track sample (local search, so the far side of the track is never mistaken for this one)
+    let best = p.idx, bd = Infinity;
+    for (let o = -25; o <= 25; o++) {
+      const i = (p.idx + o + N) % N, d = (p.x - TRACK[i][0]) ** 2 + (p.y - TRACK[i][1]) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    let di = best - p.idx; if (di < -N / 2) di += N; if (di > N / 2) di -= N;
+    p.idx = best; p.total += di;
+    p.off = Math.sqrt(bd) > ROAD / 2 + 6;
+
+    const max = p.off ? 190 : 520;
+    if (inp.t) p.v += 380 * dt;
+    if (inp.b) p.v -= 850 * dt;
+    p.v -= p.v * (p.off ? 1.8 : 0.25) * dt;
+    if (p.v > max) p.v -= (p.v - max) * Math.min(1, 4 * dt);
+    p.v = Math.max(0, p.v);
+    const turn = inp.s * 2.4 * clamp(p.v / 110, 0, 1) * (1 - 0.4 * p.v / 520);
+    p.a += turn * dt;
+    p.x = clamp(p.x + Math.cos(p.a) * p.v * dt, 0, W);
+    p.y = clamp(p.y + Math.sin(p.a) * p.v * dt, 0, H);
+
+    if (p.fin == null && p.total >= N * LAPS) {
+      p.fin = R.t; R.order.push(p); tone(660, 'triangle', 0.3);
+      if (!R.deadline) R.deadline = now + 15000;
+    }
+  }
+  for (let i = 0; i < act.length; i++) for (let j = i + 1; j < act.length; j++) {   // gentle car-to-car bumping
+    const a = act[i], b = act[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+    if (d > 0 && d < 30) { const push = (30 - d) / 2; a.x -= dx / d * push; a.y -= dy / d * push; b.x += dx / d * push; b.y += dy / d * push; a.v *= 0.98; b.v *= 0.98; }
+  }
+  R.t += dt;
+  if (act.length && (act.every(p => p.fin != null) || (R.deadline && now > R.deadline))) endRace('Race over');
+}
+
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  if (R.state === 'go') step(dt);
+  draw();
+  if (R.state === 'go' && now - hudTimer > 100) {
+    hudTimer = now;
+    const rank = ranking(), n = rank.length;
+    rank.forEach((p, i) => toPlayer(p, { type: 'hud', speed: Math.round(p.v * 0.35), lap: clamp(Math.floor(Math.max(0, p.total) / N) + 1, 1, LAPS), laps: LAPS, pos: i + 1, n, off: p.off }));
+  }
+  if (R.state !== 'idle') rafId = requestAnimationFrame(loop);
+}
+
+function draw() {
+  const cw = canvas.width, ch = canvas.height, s = Math.min(cw / W, ch / H);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#0d1a12'; ctx.fillRect(0, 0, cw, ch);
+  ctx.setTransform(s, 0, 0, s, (cw - W * s) / 2, (ch - H * s) / 2);
+  ctx.drawImage(trackCv, 0, 0);
+  for (const p of players.filter(q => q.played)) {
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(-15, -7, 34, 20);
+    ctx.fillStyle = p.color; ctx.fillRect(-17, -10, 34, 20);
+    ctx.fillStyle = '#10141c'; ctx.fillRect(2, -7, 8, 14);
+    ctx.fillStyle = '#fff'; ctx.fillRect(14, -9, 3, 4); ctx.fillRect(14, 5, 3, 4);
+    ctx.restore();
+    ctx.fillStyle = p.color; ctx.font = 'bold 16px system-ui,sans-serif'; ctx.fillText(p.name, p.x - 10, p.y - 18);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.font = 'bold 20px system-ui,sans-serif';
+  ranking().forEach((p, i) => {
+    const lap = clamp(Math.floor(Math.max(0, p.total) / N) + 1, 1, LAPS);
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(14, 14 + i * 34, 250, 28);
+    ctx.fillStyle = p.color;
+    ctx.fillText((i + 1) + '. ' + p.name + (p.fin != null ? '  finished' : '  lap ' + lap + '/' + LAPS) + (p.off ? '  (grass)' : ''), 22, 35 + i * 34);
+  });
+}
+
+function endRace(reason) {
+  R.state = 'done';
+  const rank = ranking();
+  const rows = rank.map((p, i) => '<tr style="color:' + p.color + '"><td>' + (i + 1) + '.</td><td>' + p.name + '</td><td>' + (p.fin != null ? p.fin.toFixed(1) + ' s' : 'did not finish') + '</td></tr>').join('');
+  const ov = $('overlay'); ov.classList.remove('hidden');
+  ov.innerHTML = '<h1>' + (rank[0] ? rank[0].name + ' wins!' : reason) + '</h1><table class="res">' + rows + '</table><button class="btn primary" id="btn-again">Race again</button>';
+  $('btn-again').onclick = startRace;
+  rank.forEach((p, i) => toPlayer(p, { type: 'over', text: 'You finished ' + (i + 1) + (i === 0 ? 'st' : i === 1 ? 'nd' : i === 2 ? 'rd' : 'th') }));
+  renderLobby();
+}
+
+/* ===== PHONE ===== */
+const pedal = { t: 0, b: 0 };
+let g = null, roll0 = null, needCal = true, steer = 0, steerDeg = 0, events = 0, sensorOn = false;
+
+function initPhone() {
+  $('btn-connect').onclick = connectToHost;
+  $('btn-drive').onclick = startDriving;
+  $('btn-cal').onclick = () => { needCal = true; };
+  $('btn-quit').onclick = () => location.reload();
+  const bind = (id, key) => {
+    const el = $(id);
+    el.addEventListener('pointerdown', e => { e.preventDefault(); pedal[key] = 1; el.classList.add('down'); if (navigator.vibrate) navigator.vibrate(8); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, () => { pedal[key] = 0; el.classList.remove('down'); }));
+  };
+  bind('gas', 't'); bind('brake', 'b');
+  setInterval(() => { if (sensorOn) send({ type: 'in', s: +steer.toFixed(3), t: pedal.t, b: pedal.b }); }, 33);
+}
+
+function connectToHost() {
+  const code = $('input-room-code').value.trim().toUpperCase();
+  const st = $('phone-status');
+  if (code.length !== 4) { st.textContent = 'Enter the 4-letter code.'; st.className = 'status bad'; return; }
+  st.textContent = 'Connecting...'; st.className = 'status';
+  if (peer) peer.destroy();
+  peer = new Peer();
+  peer.on('open', () => {
+    dataConn = peer.connect('race-' + code, { reliable: true });
+    const to = setTimeout(() => { st.textContent = 'No response. Check the code and that the host page is open.'; st.className = 'status bad'; }, 8000);
+    dataConn.on('open', () => { clearTimeout(to); showScreen('screen-phone-gate'); });
+    dataConn.on('data', onHostData);
+    dataConn.on('close', () => { alert('Host disconnected.'); location.reload(); });
+  });
+  peer.on('error', err => { st.textContent = err.type === 'peer-unavailable' ? 'Code not found.' : 'Error: ' + err.type; st.className = 'status bad'; });
+}
+
+function onHostData(d) {
+  if (d.type === 'welcome') { $('who').textContent = d.name; $('who').style.color = d.color; }
+  else if (d.type === 'rejected') { alert(d.reason); location.reload(); }
+  else if (d.type === 'countdown') { needCal = true; $('hudtxt').textContent = 'Get ready...'; }
+  else if (d.type === 'hud') $('hudtxt').textContent = 'P' + d.pos + '/' + d.n + '  Lap ' + d.lap + '/' + d.laps + '  ' + d.speed + ' km/h' + (d.off ? '  GRASS' : '');
+  else if (d.type === 'over') $('hudtxt').textContent = d.text;
+}
+
+async function startDriving() {
+  const gs = $('gate-status');
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      if (await DeviceMotionEvent.requestPermission() !== 'granted') { gs.textContent = 'Motion permission denied. Reload and allow it.'; gs.className = 'status bad'; return; }
+    }
+  } catch (e) { gs.textContent = 'Permission error: ' + e.message; gs.className = 'status bad'; return; }
+  try { await document.documentElement.requestFullscreen(); await screen.orientation.lock('landscape'); } catch (e) { /* not supported: user rotates manually */ }
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {});
+  window.addEventListener('devicemotion', onMotion);
+  sensorOn = true;
+  showScreen('screen-phone-ctl');
+  $('ctl-msg').textContent = 'Hold level, then tap Center wheel.';
+  setTimeout(() => { if (!events) { $('ctl-msg').textContent = 'No sensor data. Check Chrome > Site settings > Motion sensors, and that your site uses HTTPS.'; $('ctl-msg').className = 'status bad'; } }, 2500);
+}
+
+// Steering = how far the phone is rotated like a wheel, from gravity direction in the screen plane
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null || a.y == null) return;
+  events++;
+  const raw = [a.x, a.y, a.z || 0];
+  g = g ? g.map((v, i) => v + (raw[i] - v) * 0.35) : raw;
+  if (Math.hypot(g[0], g[1]) < 3) return;                          // phone lying flat: wheel angle undefined
+  const roll = Math.atan2(g[0], g[1]) / D2R;
+  if (needCal || roll0 === null) { roll0 = roll; needCal = false; $('ctl-msg').textContent = 'Wheel centered.'; $('ctl-msg').className = 'status ok'; }
+  let d = roll - roll0; while (d < -180) d += 360; while (d > 180) d -= 360;
+  steerDeg = -d;                                                    // clockwise turn = steer right
+  const range = +$('range').value;
+  let s = clamp(steerDeg / range, -1, 1);
+  const dz = 0.05; s = Math.abs(s) < dz ? 0 : Math.sign(s) * (Math.abs(s) - dz) / (1 - dz);
+  steer = Math.sign(s) * Math.pow(Math.abs(s), 1.2);
+  $('wheel').style.transform = 'rotate(' + clamp(steerDeg, -90, 90).toFixed(0) + 'deg)';
+}
+
+/* ===== Boot ===== */
+$('btn-start-host').onclick = () => { showScreen('screen-host-lobby'); initAudio(); initHost(); };
+$('btn-start-phone').onclick = () => { showScreen('screen-phone-join'); initPhone(); };
+$('btn-start-race').onclick = startRace;
+</script>
+</body>
+</html>
